@@ -48,6 +48,23 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function gradeColor(grade: string): string {
+  switch (grade) {
+    case 'A':
+      return 'text-emerald-500'
+    case 'B':
+      return 'text-blue-500'
+    case 'C':
+      return 'text-amber-500'
+    case 'D':
+      return 'text-orange-500'
+    case 'F':
+      return 'text-red-500'
+    default:
+      return 'text-muted-foreground'
+  }
+}
+
 function ScoreBadge({ level }: { level: AudioMetrics['readinessLevel'] }) {
   const config = {
     ready: {
@@ -227,31 +244,51 @@ export function AnalysisDashboard({
       {/* Tabs */}
       <Tabs defaultValue="loudness" className="w-full">
         <TabsList className="grid w-full grid-cols-7">
-          <TabsTrigger value="loudness" className="gap-1.5 text-xs sm:text-sm">
+          <TabsTrigger value="loudness" className="gap-1 text-xs sm:text-sm">
             <Gauge className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Loudness</span>
+            {'loudnessScore' in metrics && (
+              <span className={`text-[10px] font-bold ${gradeColor(metrics.loudnessScore.grade)}`}>
+                {metrics.loudnessScore.grade}
+              </span>
+            )}
           </TabsTrigger>
-          <TabsTrigger value="dynamics" className="gap-1.5 text-xs sm:text-sm">
+          <TabsTrigger value="dynamics" className="gap-1 text-xs sm:text-sm">
             <Activity className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Dynamics</span>
+            {'dynamicsScore' in metrics && (
+              <span className={`text-[10px] font-bold ${gradeColor(metrics.dynamicsScore.grade)}`}>
+                {metrics.dynamicsScore.grade}
+              </span>
+            )}
           </TabsTrigger>
-          <TabsTrigger value="frequency" className="gap-1.5 text-xs sm:text-sm">
+          <TabsTrigger value="frequency" className="gap-1 text-xs sm:text-sm">
             <Music className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Frequency</span>
+            {'frequencyScore' in metrics && (
+              <span className={`text-[10px] font-bold ${gradeColor(metrics.frequencyScore.grade)}`}>
+                {metrics.frequencyScore.grade}
+              </span>
+            )}
           </TabsTrigger>
-          <TabsTrigger value="stereo" className="gap-1.5 text-xs sm:text-sm">
+          <TabsTrigger value="stereo" className="gap-1 text-xs sm:text-sm">
             <Radio className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Stereo</span>
+            {'stereoScore' in metrics && (
+              <span className={`text-[10px] font-bold ${gradeColor(metrics.stereoScore.grade)}`}>
+                {metrics.stereoScore.grade}
+              </span>
+            )}
           </TabsTrigger>
-          <TabsTrigger value="tips" className="gap-1.5 text-xs sm:text-sm">
+          <TabsTrigger value="tips" className="gap-1 text-xs sm:text-sm">
             <Lightbulb className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Tips</span>
           </TabsTrigger>
-          <TabsTrigger value="waveform" className="gap-1.5 text-xs sm:text-sm">
+          <TabsTrigger value="waveform" className="gap-1 text-xs sm:text-sm">
             <AudioWaveform className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Waveform</span>
           </TabsTrigger>
-          <TabsTrigger value="master" className="gap-1.5 text-xs sm:text-sm">
+          <TabsTrigger value="master" className="gap-1 text-xs sm:text-sm">
             <Wand2 className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Master</span>
           </TabsTrigger>
@@ -261,10 +298,33 @@ export function AnalysisDashboard({
         <TabsContent value="loudness">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Loudness Analysis</CardTitle>
-              <CardDescription>Key loudness metrics for your mix</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Loudness Analysis</CardTitle>
+                  <CardDescription>Key loudness metrics for your mix</CardDescription>
+                </div>
+                {'loudnessScore' in metrics && (
+                  <div className="text-right">
+                    <div className={`text-2xl font-bold ${gradeColor(metrics.loudnessScore.grade)}`}>
+                      {metrics.loudnessScore.score}
+                      <span className="text-sm font-normal text-muted-foreground">/100</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">{metrics.loudnessScore.summary}</p>
+                  </div>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-1">
+              {'truePeak' in metrics && (
+                <>
+                  <MetricRow
+                    label="True Peak"
+                    value={`${metrics.truePeak.toFixed(1)} dBTP`}
+                    subtext={metrics.truePeak > -1 ? '(too hot!)' : '(ok)'}
+                  />
+                  <Separator />
+                </>
+              )}
               <MetricRow
                 label="Peak Level"
                 value={`${metrics.peakLevel.toFixed(1)} dBFS`}
@@ -279,6 +339,22 @@ export function AnalysisDashboard({
                 subtext="(target: -14)"
               />
               <Separator />
+              {'loudnessRange' in metrics && (
+                <>
+                  <MetricRow
+                    label="Loudness Range (LRA)"
+                    value={`${metrics.loudnessRange.toFixed(1)} LU`}
+                    subtext={
+                      metrics.loudnessRange < 4
+                        ? '(flat)'
+                        : metrics.loudnessRange <= 12
+                          ? '(good)'
+                          : '(very dynamic)'
+                    }
+                  />
+                  <Separator />
+                </>
+              )}
               <MetricRow
                 label="Clipping Samples"
                 value={metrics.clippingSamples > 0 ? metrics.clippingSamples.toLocaleString() : 'None'}
@@ -333,8 +409,21 @@ export function AnalysisDashboard({
         <TabsContent value="dynamics">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Dynamics & Quality</CardTitle>
-              <CardDescription>Dynamic range, headroom, and signal quality</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Dynamics & Quality</CardTitle>
+                  <CardDescription>Dynamic range, headroom, and signal quality</CardDescription>
+                </div>
+                {'dynamicsScore' in metrics && (
+                  <div className="text-right">
+                    <div className={`text-2xl font-bold ${gradeColor(metrics.dynamicsScore.grade)}`}>
+                      {metrics.dynamicsScore.score}
+                      <span className="text-sm font-normal text-muted-foreground">/100</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">{metrics.dynamicsScore.summary}</p>
+                  </div>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-1">
               <MetricRow
@@ -372,6 +461,22 @@ export function AnalysisDashboard({
               />
               <Separator />
               <MetricRow label="Silence Ratio" value={`${metrics.silenceRatio.toFixed(1)}%`} />
+              {'noiseFloor' in metrics && (
+                <>
+                  <Separator />
+                  <MetricRow
+                    label="Noise Floor"
+                    value={`${metrics.noiseFloor.toFixed(0)} dBFS`}
+                    subtext={
+                      metrics.noiseFloor < -65
+                        ? '(clean)'
+                        : metrics.noiseFloor < -50
+                          ? '(acceptable)'
+                          : '(noisy)'
+                    }
+                  />
+                </>
+              )}
 
               <div className="pt-4">
                 <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -413,8 +518,21 @@ export function AnalysisDashboard({
         <TabsContent value="frequency">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Frequency Balance</CardTitle>
-              <CardDescription>Energy distribution across the frequency spectrum</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Frequency Balance</CardTitle>
+                  <CardDescription>Energy distribution across the frequency spectrum</CardDescription>
+                </div>
+                {'frequencyScore' in metrics && (
+                  <div className="text-right">
+                    <div className={`text-2xl font-bold ${gradeColor(metrics.frequencyScore.grade)}`}>
+                      {metrics.frequencyScore.score}
+                      <span className="text-sm font-normal text-muted-foreground">/100</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">{metrics.frequencyScore.summary}</p>
+                  </div>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               <FrequencyChart bands={metrics.frequencyBands} />
@@ -463,8 +581,21 @@ export function AnalysisDashboard({
         <TabsContent value="stereo">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Stereo Image</CardTitle>
-              <CardDescription>Stereo width, phase correlation, and channel balance</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Stereo Image</CardTitle>
+                  <CardDescription>Stereo width, phase correlation, and channel balance</CardDescription>
+                </div>
+                {'stereoScore' in metrics && (
+                  <div className="text-right">
+                    <div className={`text-2xl font-bold ${gradeColor(metrics.stereoScore.grade)}`}>
+                      {metrics.stereoScore.score}
+                      <span className="text-sm font-normal text-muted-foreground">/100</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">{metrics.stereoScore.summary}</p>
+                  </div>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-1">
               <MetricRow
@@ -505,6 +636,24 @@ export function AnalysisDashboard({
                       }`
                 }
               />
+              {'monoCompatibility' in metrics && (
+                <>
+                  <Separator />
+                  <MetricRow
+                    label="Mono Compatibility"
+                    value={`${metrics.monoCompatibility}%`}
+                    subtext={
+                      metrics.monoCompatibility >= 85
+                        ? '(excellent)'
+                        : metrics.monoCompatibility >= 70
+                          ? '(good)'
+                          : metrics.monoCompatibility >= 50
+                            ? '(fair)'
+                            : '(poor!)'
+                    }
+                  />
+                </>
+              )}
 
               {/* Stereo Width Visual */}
               <div className="pt-6">

@@ -17,64 +17,92 @@ function buildAdaptivePreset(
 ): MasteringPreset {
   const preset = JSON.parse(JSON.stringify(basePreset)) as MasteringPreset;
 
-  // Adapt EQ based on frequency analysis
+  const centerFreqs: Record<string, number> = {
+    "Sub Bass": 60,
+    "Low Mids": 400,
+    "Mids": 2000,
+    "High Mids": 6000,
+    "Highs": 12000,
+  };
+
+  // Adapt EQ based on frequency analysis — scale correction by severity
   for (const band of metrics.frequencyBands) {
+    const freq = centerFreqs[band.name];
+    if (!freq) continue;
+
+    let gainAdj = 0;
+    let q = 1.0;
+
     if (band.rating === "excessive") {
-      const centerFreqs: Record<string, number> = {
-        "Sub Bass": 60,
-        "Low Mids": 400,
-        "Mids": 2000,
-        "High Mids": 6000,
-        "Highs": 12000,
-      };
-      const freq = centerFreqs[band.name];
-      if (freq) {
-        const existing = preset.eqAdjustments.find(
-          (eq) => Math.abs(eq.frequency - freq) < freq * 0.3 && eq.type === "peak"
-        );
-        if (existing) {
-          existing.gain -= 2;
-        } else {
-          preset.eqAdjustments.push({ frequency: freq, gain: -2, q: 1.0, type: "peak" });
-        }
-      }
+      // Scale cut by how far over balanced the energy is
+      const severity = Math.min(3.5, (band.energy - 65) / 15);
+      gainAdj = -Math.max(1, severity);
+      q = 1.2; // narrower Q for surgical cuts
+    } else if (band.rating === "elevated") {
+      gainAdj = -0.8;
+      q = 0.8;
+    } else if (band.rating === "deficient") {
+      const severity = Math.min(2.5, (35 - band.energy) / 15);
+      gainAdj = Math.max(0.5, severity);
+      q = 0.7; // wider Q for gentle boosts
+    } else if (band.rating === "low") {
+      gainAdj = 0.5;
+      q = 0.6;
     }
-    if (band.rating === "deficient") {
-      const centerFreqs: Record<string, number> = {
-        "Sub Bass": 60,
-        "Low Mids": 400,
-        "Mids": 2000,
-        "High Mids": 6000,
-        "Highs": 12000,
-      };
-      const freq = centerFreqs[band.name];
-      if (freq) {
-        const existing = preset.eqAdjustments.find(
-          (eq) => Math.abs(eq.frequency - freq) < freq * 0.3 && eq.type === "peak"
-        );
-        if (existing) {
-          existing.gain += 1.5;
-        } else {
-          preset.eqAdjustments.push({ frequency: freq, gain: 1.5, q: 0.8, type: "peak" });
-        }
+
+    if (gainAdj !== 0) {
+      const existing = preset.eqAdjustments.find(
+        (eq) => Math.abs(eq.frequency - freq) < freq * 0.3 && eq.type === "peak"
+      );
+      if (existing) {
+        existing.gain += gainAdj;
+        existing.q = q;
+      } else {
+        preset.eqAdjustments.push({ frequency: freq, gain: Math.round(gainAdj * 10) / 10, q, type: "peak" });
       }
     }
   }
 
-  // If dynamic range is already low, reduce compression
-  if (metrics.dynamicRange < 8) {
+  // Adapt compression based on dynamic range
+  if (metrics.dynamicRange < 6) {
+    // Already crushed — barely compress, just limit
+    preset.compressionRatio = 1.1;
+    preset.compressionThreshold = -30;
+    preset.compressionAttack = Math.max(30, preset.compressionAttack);
+    preset.compressionRelease = Math.max(250, preset.compressionRelease);
+  } else if (metrics.dynamicRange < 8) {
     preset.compressionRatio = Math.max(1.2, preset.compressionRatio - 1);
     preset.compressionThreshold -= 4;
+    preset.compressionAttack = Math.max(20, preset.compressionAttack);
+  } else if (metrics.dynamicRange > 20) {
+    // Very dynamic — compress more to tame peaks
+    preset.compressionRatio = Math.min(5, preset.compressionRatio + 1);
+    preset.compressionThreshold = Math.min(-12, preset.compressionThreshold + 3);
+    preset.compressionAttack = Math.min(8, preset.compressionAttack);
   }
 
-  // If stereo width is very narrow, increase widening
-  if (metrics.stereoWidth < 20 && metrics.channels >= 2) {
-    preset.stereoWidenAmount = Math.min(40, preset.stereoWidenAmount + 15);
+  // Adapt stereo widening
+  if (metrics.stereoWidth < 15 && metrics.channels >= 2) {
+    preset.stereoWidenAmount = Math.min(40, preset.stereoWidenAmount + 20);
+  } else if (metrics.stereoWidth > 75 && metrics.channels >= 2) {
+    // Too wide — reduce or disable widening
+    preset.stereoWidenAmount = 0;
   }
 
   // If DC offset detected, ensure high pass is active
   if (Math.abs(metrics.dcOffset) > 0.01) {
     preset.highPassFreq = Math.max(preset.highPassFreq, 30);
+  }
+
+  // If noise floor is high, bump up the high-pass
+  if (metrics.noiseFloor > -45) {
+    preset.highPassFreq = Math.max(preset.highPassFreq, 40);
+  }
+
+  // Adapt limiter ceiling based on true peak
+  if (metrics.truePeak > -0.5) {
+    // Already very hot — use a more conservative ceiling
+    preset.limiterCeiling = Math.min(preset.limiterCeiling, -1.5);
   }
 
   return preset;
@@ -152,8 +180,10 @@ function buildFFmpegFilterChain(
 
   // 6. Limiter
   if (settings.applyLimiter) {
-    const ceiling = preset.limiterCeiling;
-    filters.push(`alimiter=limit=${Math.abs(ceiling)}:level=0:asc=1:asc_level=0.5`);
+    const ceiling = preset.limiterCeiling; // dBFS, e.g. -1
+    // alimiter 'limit' expects linear amplitude 0.0625–1.0, convert from dBFS
+    const limitLinear = Math.max(0.0625, Math.min(1, Math.pow(10, ceiling / 20)));
+    filters.push(`alimiter=limit=${limitLinear.toFixed(4)}:level=0:asc=1:asc_level=0.5`);
     chain.push(`Brick-wall limiter at ${ceiling} dBFS`);
   }
 
@@ -169,6 +199,36 @@ function buildFFmpegFilterChain(
   };
 }
 
+// Two-pass loudnorm: measure first, then apply with measured values for best quality
+async function measureLoudnormPass(
+  inputPath: string,
+  targetLUFS: number,
+  targetTP: number
+): Promise<{ measured_I: string; measured_TP: string; measured_LRA: string; measured_thresh: string; offset: string } | null> {
+  try {
+    const { stderr } = await execFileAsync("ffmpeg", [
+      "-y", "-i", inputPath,
+      "-af", `loudnorm=I=${targetLUFS}:TP=${targetTP}:LRA=11:print_format=json`,
+      "-f", "null", "-",
+    ], { timeout: 120_000, maxBuffer: 50 * 1024 * 1024 });
+
+    const jsonMatch = stderr.match(/\{[\s\S]*"input_i"[\s\S]*\}/);
+    if (jsonMatch) {
+      const data = JSON.parse(jsonMatch[0]);
+      return {
+        measured_I: data.input_i,
+        measured_TP: data.input_tp,
+        measured_LRA: data.input_lra,
+        measured_thresh: data.input_thresh,
+        offset: data.target_offset,
+      };
+    }
+  } catch {
+    // fall through to null
+  }
+  return null;
+}
+
 export async function masterAudio(
   inputBuffer: Buffer,
   fileName: string,
@@ -181,11 +241,12 @@ export async function masterAudio(
   // Override target LUFS from settings
   adaptedPreset.targetLUFS = settings.targetLUFS;
 
-  const { filter, chain } = buildFFmpegFilterChain(adaptedPreset, settings, metrics);
+  const { filter: processingFilter, chain } = buildFFmpegFilterChain(adaptedPreset, settings, metrics);
 
   // Create temp directory
   const tempDir = await mkdtemp(join(tmpdir(), "pocket-producer-"));
   const inputPath = join(tempDir, "input.mp3");
+  const intermediatePath = join(tempDir, "intermediate.wav");
 
   const ext = settings.outputFormat;
   const outputPath = join(tempDir, `output.${ext}`);
@@ -194,11 +255,50 @@ export async function masterAudio(
     // Write input file
     await writeFile(inputPath, inputBuffer);
 
-    // Build ffmpeg args
+    // --- Pass 1: Apply EQ/compression/limiting (everything except loudnorm) ---
+    // Build a filter chain WITHOUT the loudnorm step
+    const filtersWithoutLoudnorm = processingFilter
+      .split(",")
+      .filter((f) => !f.startsWith("loudnorm="))
+      .join(",");
+
+    if (filtersWithoutLoudnorm) {
+      await execFileAsync("ffmpeg", [
+        "-y", "-i", inputPath,
+        "-af", filtersWithoutLoudnorm,
+        "-c:a", "pcm_s24le",
+        "-ar", String(settings.outputSampleRate),
+        intermediatePath,
+      ], { timeout: 120_000, maxBuffer: 50 * 1024 * 1024 });
+    } else {
+      // No processing filters — just copy to intermediate
+      await execFileAsync("ffmpeg", [
+        "-y", "-i", inputPath,
+        "-c:a", "pcm_s24le",
+        "-ar", String(settings.outputSampleRate),
+        intermediatePath,
+      ], { timeout: 120_000, maxBuffer: 50 * 1024 * 1024 });
+    }
+
+    // --- Pass 2: Two-pass loudnorm on the processed audio ---
+    const targetTP = adaptedPreset.limiterCeiling;
+    const measured = await measureLoudnormPass(intermediatePath, settings.targetLUFS, targetTP);
+
+    let loudnormFilter: string;
+    if (measured) {
+      // Use measured values for linear mode (highest quality)
+      loudnormFilter = `loudnorm=I=${settings.targetLUFS}:TP=${targetTP}:LRA=11:measured_I=${measured.measured_I}:measured_TP=${measured.measured_TP}:measured_LRA=${measured.measured_LRA}:measured_thresh=${measured.measured_thresh}:offset=${measured.offset}:linear=true:print_format=summary`;
+      chain.push(`Loudness normalization to ${settings.targetLUFS} LUFS (two-pass, linear mode)`);
+    } else {
+      // Fallback to single-pass
+      loudnormFilter = `loudnorm=I=${settings.targetLUFS}:TP=${targetTP}:LRA=11:print_format=summary`;
+      chain.push(`Loudness normalization to ${settings.targetLUFS} LUFS (single-pass fallback)`);
+    }
+
+    // Build final output args
     const args: string[] = [
-      "-y",
-      "-i", inputPath,
-      "-af", filter,
+      "-y", "-i", intermediatePath,
+      "-af", loudnormFilter,
     ];
 
     // Output format settings
@@ -220,9 +320,9 @@ export async function masterAudio(
 
     args.push(outputPath);
 
-    // Run ffmpeg
+    // Run final pass
     await execFileAsync("ffmpeg", args, {
-      timeout: 120_000, // 2 minute timeout
+      timeout: 120_000,
       maxBuffer: 50 * 1024 * 1024,
     });
 
@@ -243,12 +343,9 @@ export async function masterAudio(
     };
   } finally {
     // Cleanup temp files
-    try {
-      await unlink(inputPath);
-      await unlink(outputPath);
-    } catch {
-      // ignore cleanup errors
-    }
+    try { await unlink(inputPath); } catch { }
+    try { await unlink(intermediatePath); } catch { }
+    try { await unlink(outputPath); } catch { }
   }
 }
 
